@@ -3,37 +3,37 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Estúdio de Voz</title>
+<title>Estúdio de Voz (Gemini)</title>
 <style>
   body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:520px;margin:0 auto;padding:16px}
   h1{font-size:22px} h2{font-size:16px;margin:24px 0 8px;color:#8fd}
   input,textarea,select,button{width:100%;box-sizing:border-box;padding:12px;margin:4px 0;border-radius:10px;border:1px solid #444;background:#222;color:#eee;font-size:16px}
   button{background:#6c4cff;border:0;font-weight:600} button:disabled{opacity:.4}
   label.chk{display:flex;gap:8px;align-items:center} label.chk input{width:auto}
-  #log{font-size:13px;color:#aaa;white-space:pre-wrap;margin-top:12px}
+  #log{font-size:13px;color:#aaa;white-space:pre-wrap;margin-top:12px;word-break:break-word}
   audio{width:100%;margin-top:8px}
 </style>
 </head>
 <body>
 <h1>🎤 Estúdio de Voz</h1>
 
-<h2>0. Sua chave da ElevenLabs</h2>
-<input id="key" type="password" placeholder="Cole sua API key (xi-api-key)">
+<h2>0. Sua chave do Gemini (Google AI Studio)</h2>
+<input id="key" type="password" placeholder="Cole sua API key">
+<label class="chk"><input type="checkbox" id="lembrar"> Lembrar a chave neste celular</label>
 
 <h2>1. Grave sua voz (cantando ou rimando)</h2>
 <button id="rec">⏺ Gravar</button>
 <audio id="vozPlayer" controls hidden></audio>
 
-<h2>2. Converter com a sua voz clonada (opcional)</h2>
-<label class="chk"><input type="checkbox" id="usarSTS"> Passar pela conversão de voz</label>
-<input id="voiceId" placeholder="Voice ID da sua voz clonada">
-
-<h2>3. Descreva a base</h2>
+<h2>2. Descreva a base</h2>
 <textarea id="prompt" rows="3" placeholder="Ex: beat de trap melódico, 140 bpm, grave pesado"></textarea>
-<input id="dur" type="number" value="30" min="10" max="120"> 
-<small>duração em segundos</small>
+<label class="chk"><input type="checkbox" id="instr" checked> Só instrumental (sem voz cantando)</label>
+<select id="modelo">
+  <option value="lyria-3-clip-preview">Clipe de 30s (bom pra testar)</option>
+  <option value="lyria-3.5">Música completa (demora mais)</option>
+</select>
 
-<h2>4. Mixagem</h2>
+<h2>3. Mixagem</h2>
 <label>Volume da voz <input id="gVoz" type="range" min="0" max="2" step="0.1" value="1.2"></label>
 <label>Volume da base <input id="gBase" type="range" min="0" max="2" step="0.1" value="0.7"></label>
 
@@ -46,6 +46,12 @@
 const $ = id => document.getElementById(id);
 const log = t => $('log').textContent += t + '\n';
 let vozBlob = null, recorder = null, chunks = [];
+
+// ---------- chave guardada no celular (opcional) ----------
+try {
+  const k = localStorage.getItem('gemini_key');
+  if (k) { $('key').value = k; $('lembrar').checked = true; }
+} catch (e) {}
 
 // ---------- 1. GRAVAR ----------
 $('rec').onclick = async () => {
@@ -67,30 +73,32 @@ $('rec').onclick = async () => {
   } catch (e) { log('Erro no microfone: ' + e.message); }
 };
 
-// ---------- 2. CONVERSÃO DE VOZ (ElevenLabs speech-to-speech) ----------
-async function converterVoz(blob, key, voiceId) {
-  const fd = new FormData();
-  fd.append('audio', blob, 'voz.webm');
-  fd.append('model_id', 'eleven_multilingual_sts_v2');
-  const r = await fetch(`https://api.elevenlabs.io/v1/speech-to-speech/${voiceId}`, {
-    method: 'POST', headers: { 'xi-api-key': key }, body: fd
-  });
-  if (!r.ok) throw new Error('Conversão falhou: ' + r.status + ' ' + await r.text());
-  return await r.blob();
+// ---------- 2. GERAR BASE (Gemini / Lyria) ----------
+function b64ParaBlob(b64, mime) {
+  const bin = atob(b64), arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
 }
 
-// ---------- 3. GERAR BASE (ElevenLabs Music) ----------
-async function gerarBase(prompt, segundos, key) {
-  const r = await fetch('https://api.elevenlabs.io/v1/music', {
+async function gerarBase(prompt, modelo, key) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
+  const r = await fetch(url, {
     method: 'POST',
-    headers: { 'xi-api-key': key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, music_length_ms: segundos * 1000, model_id: 'music_v2' })
+    headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
   });
-  if (!r.ok) throw new Error('Música falhou: ' + r.status + ' ' + await r.text());
-  return await r.blob();
+  const txt = await r.text();
+  if (!r.ok) throw new Error('Gemini respondeu ' + r.status + ': ' + txt.slice(0, 300));
+  const data = JSON.parse(txt);
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  for (const p of parts) {
+    const inl = p.inlineData || p.inline_data;
+    if (inl && inl.data) return b64ParaBlob(inl.data, inl.mimeType || inl.mime_type || 'audio/mpeg');
+  }
+  throw new Error('A resposta veio sem áudio: ' + txt.slice(0, 300));
 }
 
-// ---------- 4. MIXAR ----------
+// ---------- 3. MIXAR ----------
 async function mixar(vozB, baseB, gVoz, gBase) {
   const ctx = new AudioContext();
   const [voz, base] = await Promise.all([
@@ -130,18 +138,18 @@ $('go').onclick = async () => {
   if (!key) return log('Cole sua API key.');
   if (!vozBlob) return log('Grave sua voz primeiro.');
   if (!$('prompt').value.trim()) return log('Descreva a base.');
+  try {
+    if ($('lembrar').checked) localStorage.setItem('gemini_key', key);
+    else localStorage.removeItem('gemini_key');
+  } catch (e) {}
   $('go').disabled = true; $('log').textContent = '';
   try {
-    let voz = vozBlob;
-    if ($('usarSTS').checked) {
-      if (!$('voiceId').value.trim()) throw new Error('Coloque o Voice ID.');
-      log('Convertendo a voz...');
-      voz = await converterVoz(vozBlob, key, $('voiceId').value.trim());
-    }
+    let prompt = $('prompt').value.trim();
+    if ($('instr').checked) prompt += '. Instrumental only, no vocals, no singing.';
     log('Gerando a base (pode levar um minuto)...');
-    const base = await gerarBase($('prompt').value, +$('dur').value, key);
+    const base = await gerarBase(prompt, $('modelo').value, key);
     log('Mixando...');
-    const mix = await mixar(voz, base, +$('gVoz').value, +$('gBase').value);
+    const mix = await mixar(vozBlob, base, +$('gVoz').value, +$('gBase').value);
     const wav = paraWav(mix), url = URL.createObjectURL(wav);
     $('final').src = url; $('final').hidden = false;
     $('dl').href = url; $('dl').download = 'minha-musica.wav'; $('dl').hidden = false;
